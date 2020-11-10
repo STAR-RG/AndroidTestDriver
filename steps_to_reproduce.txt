@@ -1,0 +1,162 @@
+1. Install the Android SDK
+  
+2. Update your path
+
+  2.1 Update your .bashrc file as follows
+
+  ## add these variables
+  export ANDROID_HOME=${HOME}/Android/Sdk  ### <--- where your sdk is stored
+  ANDROID_EMULATOR=${ANDROID_HOME}/emulator
+  ANDROID_TOOLS=${ANDROID_HOME}/tools
+  ANDROID_TOOLS_BIN=${ANDROID_HOME}/tools/bin
+  ANDROID_PLATFORM_TOOLS=${ANDROID_HOME}/platform-tools/
+  ANDROID_BUILD_TOOLS=${ANDROID_HOME}/build-tools/28.0.3    ### <----change this
+  ## add the four previous variables to your path
+  export PATH=$PATH:${ANDROID_EMULATOR}:${ANDROID_TOOLS}:${ANDROID_TOOLS_BIN}:${ANDROID_PLATFORM_TOOLS}:${ANDROID_BUILD_TOOLS}
+
+  2.2 Source your .bashrc (unless you want to logoff/login)
+
+  $> source .bashrc
+
+3. Check if you have AVDs available. If not, please create one (you
+can do this from the command line or from Android Studio, if you
+prefer).
+
+  $> emulator -list-avds
+Nexus_5_API_28
+  $> 
+
+4. Spawn the AVD
+
+  [[ this is very demanding on memory! if you have 8GB mem. or less,
+     suggest to close your browser and Android Studio, which are also
+     memory eaters. ]]
+
+  $> emulator @Nexus_5_API_28
+
+5. Install the apk on this device
+
+  - Download the apk. I downloaded the 2048 game from the F-Droid
+    website: https://f-droid.org/repo/com.uberspot.a2048_25.apk
+
+  - Run the following commands:
+      $> cd ${ANDROID_HOME}/platforms/android-28
+      $> cp ~/Downloads/com.uberspot.a2048_25.apk .
+      $> adb install com.uberspot.a2048_25.apk
+         // should print this -->
+         Performing Streamed Install
+         Success
+
+6. Run monkey
+
+  Obs. This is the tool used in the evaluation of other test generation techniques
+
+  - Find the name of the package associated with your apk using the
+    command "aapt dump badging <path-to-apk> | grep package:\
+    name". For example:
+
+       $> aapt dump badging com.uberspot.a2048_25.apk | grep package:\ name
+        // should print this -->
+        package: name='com.uberspot.a2048' versionCode='25' versionName='2.2' compileSdkVersion='28' compileSdkVersionCodename='9'
+
+  - Run monkey with the package name
+
+       $> adb -e shell monkey --ignore-crashes -p com.uberspot.a2048 --script-log 500 
+
+7. Run a monkey script. It is *not* the same thing as using monkey as above.
+
+   - You will need the name of the main activity in your app. Use the
+     following command for that:
+
+       $> aapt dump xmltree com.uberspot.a2048_25.apk AndroidManifest.xml | grep MainActivity
+        // should print this -->       
+        A: android:name(0x01010003)="com.uberspot.a2048.MainActivity" (Raw: "com.uberspot.a2048.MainActivity")
+
+   - Create a python script as this one -->
+     https://developer.android.com/studio/test/monkeyrunner#SampleProgram
+
+       // create a file my-monkey-script.py for this...
+       from com.android.monkeyrunner import MonkeyRunner, MonkeyDevice
+       device = MonkeyRunner.waitForConnection()
+       package = 'com.uberspot.a2048'
+       activity = 'com.uberspot.a2048.MainActivity'
+       runComponent = package + '/' + activity
+       device.startActivity(component=runComponent)
+       device.press('KEYCODE_MENU', MonkeyDevice.DOWN_AND_UP)
+       result = device.takeSnapshot()
+       result.writeToFile('shot1.png','png')
+
+   - Make sure you are using Java 8. This is a restriction of monkeyrunner:
+     https://stackoverflow.com/questions/51146624/cant-run-the-monkeyrunner-script/51881551
+
+   - Invoke the monkeyrunner tool. Note the difference compared to
+     monkey called from the adb shell. 
+
+     $> monkeyrunner my-monkey-script.py
+
+8. Save a uiautomator dump to a file
+
+     Obs. start a new game before running this
+
+     $> uiautomatorviewer &
+     $> adb exec-out uiautomator dump /dev/tty > current-screen.xml
+
+9. Save the following script to a parsexml.py file
+
+====
+from bs4 import BeautifulSoup
+
+def main():
+    with open("current-screen.xml", "r") as f:
+        contents=f.read()
+        soup = BeautifulSoup(contents, 'xml')
+        for message in soup.findAll('node'):
+            msg_attrs = dict(message.attrs)
+            if (msg_attrs['class']=='android.view.View'):
+                parts=msg_attrs['bounds'].split("][")
+                parts[0]=parts[0][1:]
+                parts[1]=parts[1][0:len(parts[1])-1]
+                parts0=parts[0].split(",")
+                parts1=parts[1].split(",")
+                x0=int(parts0[0])
+                y0=int(parts0[1])
+                x1=int(parts1[0])
+                y1=int(parts1[1])
+                print("x:{}-{}, y:{}-{}".format(x0,x1,y0,y1))
+
+if __name__ == "__main__":
+    main()
+====
+
+10. Run the python script against the xml and choose one event
+manually
+
+   $> pip3 install bs4 lxml
+   $> python parsexml.py | sort | uniq
+
+11. Create a game player script based on one of the intervals we found
+on the output above
+
+=== save to file 2048-game-player.py
+from com.android.monkeyrunner import MonkeyRunner, MonkeyDevice
+import random
+device = MonkeyRunner.waitForConnection()
+package = 'com.uberspot.a2048'
+activity = 'com.uberspot.a2048.MainActivity'
+runComponent = package + '/' + activity
+device.startActivity(component=runComponent)
+for x in range(500):
+    # (150,714) (930,1494) ## <--- the main board
+    x1 = random.randint(150, 930)
+    y1 = random.randint(714, 1494)
+
+    x2 = random.randint(150, 930)
+    y2 = random.randint(714, 1494)
+
+    device.drag((x1,y1), (x2,y2), 0.01, 2)
+
+12. Run script with monkeyrunner
+
+   Obs. start a new game before running this
+
+   $> monkeyrunner -v ALL 2048-game-player.py
